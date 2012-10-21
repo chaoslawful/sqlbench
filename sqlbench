@@ -1,0 +1,126 @@
+#!/usr/bin/env node
+// vim:ft=javascript ts=4 sw=4 et fdm=marker
+
+// command-line options parsing
+var optDesc = require('optimist')
+			.usage('Usage: $0 [options] <sql list file>')
+			.describe({
+				H:'Specifies database host',
+				P:'Specifies database port',
+				u:'Specifies database user',
+				p:'Specifies database password',
+				d:'Specifies database to use',
+                w:'Specifies number of worker processes',
+				c:'Specifies number of concurrent connections per worker',
+                o:'Specifies timing log path',
+			})
+			.default({
+				H:'localhost',
+				P:3306,
+				u:'root',
+				p:'',
+				d:'test',
+                w:0,
+				c:10,
+                o:'result.log',
+			});
+var argv = optDesc.argv;
+
+if(argv.h) {
+	optDesc.showHelp();
+    process.exit(1);
+}
+
+if(argv._.length != 1) {
+	optDesc.showHelp();
+	console.error('Must specify SQL list file in command line!');
+    process.exit(1);
+}
+
+var host = argv.H;
+var port = argv.P;
+var user = argv.u;
+var pass = argv.p;
+var db = argv.d;
+var nworker = argv.w || require('os').cpus().length;
+var nconc = argv.c;
+var logPath = argv.o;
+var sqlPath = argv._[0];
+
+var fs = require('fs');
+var cluster = require('cluster');
+
+if(cluster.isMaster) {
+    // fork workers
+    for(var i=0; i<nworker; i++) {
+        cluster.fork();
+    }
+
+    cluster.on('exit', function(worker, code, signal) {
+        console.warn('worker ' + worker.process.pid + ' ended');
+    });
+} else {
+    // do business in worker
+    var mysql = require('mysql');
+    var lineReader = require('line-reader');
+
+    var workerId = cluster.worker.id;
+    var shard = workerId  % nworker;
+
+    try {
+        fs.unlinkSync(logPath+"."+workerId);
+    }catch(e){}
+
+    // create mysql connections
+    var conns = [];
+    for(var i=0; i<nconc; i++) {
+        var conn = mysql.createClient({
+            host: host,
+            user: user,
+            password: pass,
+            database: db,
+            charset: 'utf8',
+        });
+        conns.push(conn);
+    }
+
+    // run benchmarking
+    var lineCnt = 0;
+    var connCnt = 0;
+    var queryCnt = 0;
+    var logCnt = 0;
+
+    lineReader.eachLine(sqlPath, function(line, last) {
+        if(lineCnt % nworker == shard) {
+            var queryStart = process.hrtime();
+
+            if(line.length > 0) {
+                queryCnt++;
+                conns[connCnt].query(line, function(err, rows, fields) {
+                    if(err) throw err;
+                    var diff = process.hrtime(queryStart);
+
+                    // log query and timing info
+                    var entry = line+"\t"+(diff[0]+diff[1]/1e9)+"\n";
+                    fs.appendFile(logPath+"."+workerId, entry, function(err) {
+                        if(err) throw err;
+                        logCnt++;
+                        if(queryCnt==logCnt)
+                            setTimeout(function() {
+                                if(queryCnt==logCnt) {
+                                    process.exit(0);
+                                }
+                            }, 1000);
+                    });
+                }
+                );
+            }
+
+            // use connections in round-robin way
+            connCnt = (connCnt+1) % nconc;
+        }
+
+        lineCnt++;
+    });
+}
+
