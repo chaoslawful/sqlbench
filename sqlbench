@@ -25,7 +25,8 @@ var optDesc = require('optimist')
                 w:0,
 				c:10,
                 o:'result.log',
-			});
+			})
+            .string(['H', 'u', 'p', 'd', 'o']);
 var argv = optDesc.argv;
 
 if(argv.h) {
@@ -84,6 +85,7 @@ if(cluster.isMaster) {
     for(var i=0; i<nconc; i++) {
         var conn = mysql.createClient({
             host: host,
+            port: port,
             user: user,
             password: pass,
             database: db,
