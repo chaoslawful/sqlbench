@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // vim:ft=javascript ts=4 sw=4 et fdm=marker
 
+var os = require('os');
+
 // command-line options parsing
 var optDesc = require('optimist')
 			.usage('Usage: $0 [options] <sql list file>')
@@ -42,7 +44,7 @@ var port = argv.P;
 var user = argv.u;
 var pass = argv.p;
 var db = argv.d;
-var nworker = argv.w || require('os').cpus().length;
+var nworker = argv.w || os.cpus().length;
 var nconc = argv.c;
 var logPath = argv.o;
 var sqlPath = argv._[0];
@@ -65,7 +67,7 @@ if(cluster.isMaster) {
     var lineReader = require('line-reader');
 
     var workerId = cluster.worker.id;
-    var shard = workerId  % nworker;
+    var shard = workerId % nworker;
 
     try {
         fs.unlinkSync(logPath+"."+workerId);
@@ -92,16 +94,19 @@ if(cluster.isMaster) {
 
     lineReader.eachLine(sqlPath, function(line, last) {
         if(lineCnt % nworker == shard) {
-            var queryStart = process.hrtime();
+            // process.hrtime() only available in 0.8.x, here we use
+            // os.uptime() to keep backward-compatibility with 0.6.x
+            var queryStart = os.uptime();
 
             if(line.length > 0) {
                 queryCnt++;
                 conns[connCnt].query(line, function(err, rows, fields) {
                     if(err) throw err;
-                    var diff = process.hrtime(queryStart);
+
+                    var queryStop = os.uptime();
 
                     // log query and timing info
-                    var entry = line+"\t"+(diff[0]+diff[1]/1e9)+"\n";
+                    var entry = line+"\t"+(queryStop-queryStart)+"\n";
                     fs.appendFile(logPath+"."+workerId, entry, function(err) {
                         if(err) throw err;
                         logCnt++;
