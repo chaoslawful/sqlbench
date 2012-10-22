@@ -51,24 +51,33 @@ var sqlPath = argv._[0];
 
 var fs = require('fs');
 var cluster = require('cluster');
+var lineReader = require('line-reader');
 
 if(cluster.isMaster) {
-    // fork workers
-    for(var i=0; i<nworker; i++) {
-        process.env['SQLBENCH_WORKER_ID'] = i;
-        cluster.fork();
-    }
+    // count sql number
+    var totalLines = 0;
+    lineReader.eachLine(sqlPath, function(line, last) {
+        totalLines++;
+    }).then(function() {
+        // fork workers
+        process.env['SQLBENCH_TOTAL_LINES'] = totalLines;
+        for(var i=0; i<nworker; i++) {
+            process.env['SQLBENCH_WORKER_ID'] = i;
+            cluster.fork();
+        }
+    });
 } else {
     // do business in worker
     var mysql = require('mysql');
-    var lineReader = require('line-reader');
 
+    var totalLines = process.env['SQLBENCH_TOTAL_LINES'];
     var workerId = process.env['SQLBENCH_WORKER_ID'];
     var shard = workerId % nworker;
 
     try {
         fs.unlinkSync(logPath+"."+workerId);
     }catch(e){}
+    var logFd = fs.openSync(logPath+"."+workerId, "a+");
 
     // create mysql connections
     var conns = [];
@@ -89,6 +98,14 @@ if(cluster.isMaster) {
     var queryCnt = 0;
     var logCnt = 0;
 
+    // periodly check completion condition
+    setInterval(function() {
+        if(Math.abs(lineCnt-totalLines)<=1 && queryCnt==logCnt) {
+            console.warn('worker ' + workerId + ' reach barrier: logged %d records', logCnt);
+            process.exit(0);
+        }
+    }, 1000);
+
     lineReader.eachLine(sqlPath, function(line, last) {
         if(lineCnt % nworker == shard) {
             // process.hrtime() only available in 0.8.x, here we use
@@ -104,15 +121,10 @@ if(cluster.isMaster) {
 
                     // log query and timing info
                     var entry = line+"\t"+(queryStop-queryStart)+"\n";
-                    fs.appendFile(logPath+"."+workerId, entry, function(err) {
+                    var buf = new Buffer(entry, "utf8");
+                    fs.write(logFd, buf, 0, buf.length, null, function(err, written, buffer) {
                         if(err) throw err;
                         logCnt++;
-                        if(queryCnt==logCnt)
-                            setTimeout(function() {
-                                if(queryCnt==logCnt) {
-                                    process.exit(0);
-                                }
-                            }, 1000);
                     });
                 }
                 );
