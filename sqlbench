@@ -75,10 +75,17 @@ if(cluster.isMaster) {
     var workerId = process.env['SQLBENCH_WORKER_ID'];
     var shard = workerId % nworker;
 
+    var logFileName = logPath + "." + workerId;
+    var errFileName = logPath + "." + workerId + ".err";
+
     try {
-        fs.unlinkSync(logPath+"."+workerId);
+        fs.unlinkSync(logFileName);
     }catch(e){}
-    var logFd = fs.openSync(logPath+"."+workerId, "a+");
+    try {
+        fs.unlinkSync(errFileName);
+    }catch(e){}
+    var logFd = fs.openSync(logFileName, "a+");
+    var errFd = fs.openSync(errFileName, "a+");
 
     // create mysql connections
     var conns = [];
@@ -99,11 +106,12 @@ if(cluster.isMaster) {
     var connCnt = 0;
     var queryCnt = 0;
     var logCnt = 0;
+    var errCnt = 0;
 
     // periodly check completion condition
     setInterval(function() {
         if(Math.abs(lineCnt-totalLines)<=1 && queryCnt==logCnt) {
-            console.warn('worker ' + workerId + ' reach barrier: logged %d records', logCnt);
+            console.warn('worker ' + workerId + ' reach barrier: logged %d records (contains %d error records)', logCnt, errCnt);
             process.exit(0);
         }
     }, 1000);
@@ -117,12 +125,21 @@ if(cluster.isMaster) {
             if(line.length > 0) {
                 queryCnt++;
                 conns[connCnt].query(line, function(err, rows, fields) {
-                    if(err) throw err;
+                    if(err) {
+                        var entry = line + "\t" + err + "\n";
+                        var buf = new Buffer(entry, "utf8");
+                        errCnt++;
+                        fs.write(errFd, buf, 0, buf.length, null, function(err, written, buffer) {
+                            if(err) throw err;
+                            logCnt++;
+                        });
+                        return;
+                    }
 
                     var queryStop = os.uptime();
 
                     // log query and timing info
-                    var entry = line+"\t"+(queryStop-queryStart)+"\n";
+                    var entry = line + "\t" + (queryStop - queryStart) + "\n";
                     var buf = new Buffer(entry, "utf8");
                     fs.write(logFd, buf, 0, buf.length, null, function(err, written, buffer) {
                         if(err) throw err;
