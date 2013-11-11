@@ -90,7 +90,7 @@ if(cluster.isMaster) {
     // create mysql connections
     var conns = [];
     for(var i=0; i<nconc; i++) {
-        var conn = mysql.createClient({
+        var conn = mysql.createConnection({
             host: host,
             port: port,
             user: user,
@@ -98,6 +98,7 @@ if(cluster.isMaster) {
             database: db,
             charset: 'utf8',
         });
+        conn.connect();
         conns.push(conn);
     }
 
